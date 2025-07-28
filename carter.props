@@ -1,0 +1,24 @@
+const int C0;
+
+R{"energy"}min=? [ F nav_success ]
+
+R{"energy"}max=? [ F nav_terminal ]
+
+Pmax=? [G (collided=true)]
+
+Pmax=? [F tag_success]
+
+Pmax=? [F nav_success]
+
+Pmax=? [F mission_success]
+
+Pmax=? [F mission_safe_fail]
+
+Pmax=? [F nav_fail]
+
+P>=1 [F nav_terminal]
+
+filter(min, R{"energy"}min=? [ F nav_success ], nav_success) 
+
+Pmax=? [F bat<0]
+
