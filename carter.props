@@ -1,24 +1,22 @@
-const int C0;
+R{"energy"}=? [ F nav_terminal ]
 
-R{"energy"}min=? [ F nav_success ]
+P=? [ F (collided=true) ]
 
-R{"energy"}max=? [ F nav_terminal ]
+P=? [ F tag_success ]
 
-Pmax=? [G (collided=true)]
+P=? [ F nav_docked ]
 
-Pmax=? [F tag_success]
+P=? [ F mission_success ]
 
-Pmax=? [F nav_success]
+P=? [ F nav_failed ]
 
-Pmax=? [F mission_success]
+P=? [ F nav_terminal ]
 
-Pmax=? [F mission_safe_fail]
+P=? [ F bat<LOW_BAT ]
 
-Pmax=? [F nav_fail]
+P=? [ F bat=0 ]
 
-P>=1 [F nav_terminal]
+P=? [ F (phase=0&!collided&bat<=LOW_BAT&bat>=cost_dock_soc&t<MAX_TIME) ]
 
-filter(min, R{"energy"}min=? [ F nav_success ], nav_success) 
-
-Pmax=? [F bat<0]
+P=? [ F (CAN_DETECT&wp=6) ]
 

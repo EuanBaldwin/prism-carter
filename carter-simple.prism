@@ -1,0 +1,115 @@
+mdp
+
+const int N_WP      = 6;              // number of patrol way‑points
+const int LAST_WP   = N_WP-1;         // index of the final patrol waypoint (5)
+const int BASE_ID   = 6;              // index of the charging base
+const int MAX_BAT   = 100;            // battery capacity (abstract units)
+const int MAX_TIME  = 1000;           // hard deadline for one patrol cycle (time‑steps)
+
+const double p_detect    = 0.995;     // success probability of AprilTag detection
+const double p_collision = 0.05;      // probability that a motion step ends in a collision
+const double p_recover   = 0.90;      // probability that the recovery attempt succeeds
+
+const int MOVE_COST    = 10;          // energy for one movement step
+const int RECOVER_COST = 4;           // energy for a recovery manoeuvre
+const int SCAN_COST    = 1;           // energy for one tag scan
+const int LOW_BAT      = 15;          // safety margin that triggers an early return
+
+module robot
+    // Mission phases: 0 = patrolling, 1 = homing, 2 = done, 3 = failed
+    phase    : [0..3]        init 0;
+    bat      : [0..MAX_BAT]  init MAX_BAT;
+    time     : [0..MAX_TIME] init 0;
+    collided : bool          init false;
+    scanned  : bool          init false;
+    wp       : [0..BASE_ID]  init 0;
+
+    // Tag upload record
+    seen0 : bool init false;
+    seen1 : bool init false;
+    seen2 : bool init false;
+    seen3 : bool init false;
+    seen4 : bool init false;
+    seen5 : bool init false;
+
+    // Motion while patrolling
+    [move] phase = 0 & scanned & !collided & wp < LAST_WP
+          & bat >= MOVE_COST & time < MAX_TIME ->
+        p_collision : (collided' = true) &
+                      (bat' = bat - MOVE_COST) &
+                      (time' = time + 1)
+      + (1 - p_collision)
+          : (wp' = wp + 1) &
+            (bat' = bat - MOVE_COST) &
+            (time' = time + 1) &
+            (scanned' = false);
+
+    // Collision recovery
+    [recover] phase < 3 & collided = true & bat >= RECOVER_COST & time < MAX_TIME ->
+        // Recovered branch – robot recovers and continues.
+        p_recover       : (collided' = false) &
+                          (bat' = bat - RECOVER_COST) &
+                          (time' = time + 1)
+      // Failure branch – mission aborts.
+      + (1 - p_recover) : (phase' = 3) &
+                          (bat' = bat - RECOVER_COST) &
+                          (time' = time + 1);
+
+    // Tag detection
+    [detect] phase = 0 & !collided & !scanned & wp < N_WP
+            & bat >= SCAN_COST & time < MAX_TIME ->
+        p_detect : (seen0' = seen0 | (wp = 0)) &
+                   (seen1' = seen1 | (wp = 1)) &
+                   (seen2' = seen2 | (wp = 2)) &
+                   (seen3' = seen3 | (wp = 3)) &
+                   (seen4' = seen4 | (wp = 4)) &
+                   (seen5' = seen5 | (wp = 5)) &
+                   (scanned' = true) &
+                   (bat' = bat - SCAN_COST) &
+                   (time' = time + 1)
+      + (1 - p_detect) : (scanned' = true) &
+                         (bat' = bat - SCAN_COST) &
+                         (time' = time + 1);
+
+    // Switch to homing
+    [head_home] phase = 0 & !collided &
+                        ((wp = LAST_WP & scanned) | bat <= LOW_BAT) ->
+        (phase' = 1) & (scanned' = false);
+
+    // Travel toward base
+    [move] phase = 1 & wp < BASE_ID & !collided
+          & bat >= MOVE_COST & time < MAX_TIME ->
+        p_collision : (collided' = true) &
+                      (bat' = bat - MOVE_COST) &
+                      (time' = time + 1)
+      + (1 - p_collision)
+          : (wp' = BASE_ID) &
+            (bat' = bat - MOVE_COST) &
+            (time' = time + 1) &
+            (phase' = 2); // mission complete
+
+    // Failure transitions (absorb into phase 3)
+    [fail] phase < 2 & time >= MAX_TIME -> (phase' = 3);
+    [fail] phase < 2 & collided & bat < RECOVER_COST -> (phase' = 3);
+    [fail] phase = 0 & !collided & scanned  & bat < MOVE_COST -> (phase' = 3);
+    [fail] phase = 0 & !collided & !scanned & bat < SCAN_COST -> (phase' = 3);
+    [fail] phase = 1 & !collided & bat < MOVE_COST -> (phase' = 3);
+
+    // Self‑loops in absorbing phases
+    [] phase = 2 -> (phase' = 2);   // success
+    [] phase = 3 -> (phase' = 3);   // failure
+endmodule
+
+rewards "energy"
+    [move]    true : MOVE_COST;
+    [recover] true : RECOVER_COST;
+    [detect]  true : SCAN_COST;
+    [] phase=2 | phase=3 : 1;
+endrewards
+
+formula tag_success       = seen0 & seen1 & seen2 & seen3 & seen4 & seen5;
+formula nav_success       = (phase = 2);
+formula nav_fail          = (phase = 3);
+formula nav_terminal      = (nav_success | nav_fail);
+formula mission_success   = (nav_success & tag_success);
+formula mission_safe_fail = (nav_success & !tag_success);
