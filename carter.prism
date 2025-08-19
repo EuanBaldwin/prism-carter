@@ -1,39 +1,96 @@
+// Model: Autonomous warehouse patrol robot DTMC with battery, perception, and recovery logic.
+
+// Purpose: 
+//   Abstract a strict ordered patrol (0→1→2→3→4→5→6→dock) to evaluate
+//   navigation success, tag-detection success, early docking on low SoC, and
+//   failure due to recovery or resource/time limits.
+
+// State summary:
+//   phase ∈ {0,1,2}: 0=patrol (ongoing), 1=docked (absorbing), 2=failure (absorbing).
+//   wp ∈ {0..6}:     Current waypoint (0=dock/start). Patrol order is linear 0→…→6.
+//   bat ∈ {0..MAX}:  Battery units (1 unit = 0.1% SoC). Costs are debited on actions.
+//   t ∈ {0..T}:      Discrete time steps; each move/scan/recovery increments t by 1.
+//   recovery (bool): Latch indicating we are in a recovery subroutine after a collision.
+//   scanned (bool):  Enforces scan attempt per waypoint; resets on movement.
+//   already_docking,set_bat_low (bool): Latches to ensure a clean low-SoC docking path.
+//   seen{1..6} (bool): Per-waypoint tag detections.
+
+// Action summary:
+//   move_ij: attempt to traverse edge i→j; may trigger recovery; consumes cost_ij on success.
+//   scan_k:  single Bernoulli tag-detection attempt at waypoint k.
+//   recovery: try to resolve a collision; success clears latch; failure absorbs to phase=2.
+//   soc_bat_low / move_dock_soc: structured early-docking path at/under LOW_BAT.
+//   move_dock: final leg from wp=6 to dock; may itself trigger recovery.
+
+// Termination:
+//   Success when phase=1 (returned_to_dock). Failure on timeout, insufficient SoC for
+//   mandated action, or failed recovery. Reward encodes total SoC consumed at termination.
+
+// Assumptions:
+//   Segment-specific recovery triggers are Bernoulli per move (memoryless abstraction).
+//   Patrol moves only proceed if post-move SoC would remain ≥ LOW_BAT (reserve policy).
+//   Docking leg requires bat≥cost_dock; it may also suffer a recovery event.
+
 dtmc  // Discrete-time Markov chain
 
-// Global bounds and thresholds
-const int MAX_TIME = 1000;   // Time horizon (steps)
-const int MAX_BAT  = 1000;   // Battery capacity (1000 = 100%)
-const int LOW_BAT  = 300;    // Early-return threshold (30%)
+// --------------------------------- Global constants ---------------------------------
 
-// Global probabilities
-const double p_detect  = 0.991;  // AprilTag detection at a waypoint
-const double p_coll    = 0.097;  // Collision during motion
-const double p_recover = 0.902;  // Successful recovery after collision
+const int    MAX_TIME           = 100;     // Time horizon (steps) for the patrol episode
+const int    MAX_BAT            = 1000;    // Battery capacity (1 unit = 0.1% SoC; 1000 = 100%)
+const int    LOW_BAT            = 200;     // Reserve threshold (20%) that triggers early docking
+const double p_detect           = 0.99988; // Per-waypoint AprilTag detection success
+const double p_recovery_success = 0.9852;  // Probability that a recovery attempt resolves safely
 
-// Energy costs applied only on successful move
-const int cost_01       = 117;   // Move 0→1
-const int cost_12       = 97;    // Move 1→2
-const int cost_23       = 97;    // Move 2→3
-const int cost_34       = 113;   // Move 3→4
-const int cost_45       = 118;   // Move 4→5
-const int cost_56       = 109;   // Move 5→6
-const int cost_dock     = 124;   // Move 6→0 (end-of-cycle dock)
-const int cost_dock_soc = 101;   // Low-SoC direct dock
-const int cost_recover  = 10;    // Recovery action cost
+// Probability that a recovery is triggered on move_ij
+const double p_recovery_01   = 0.043;
+const double p_recovery_12   = 0.040;
+const double p_recovery_23   = 0.042;
+const double p_recovery_34   = 0.042;
+const double p_recovery_45   = 0.051;
+const double p_recovery_56   = 0.047;
+const double p_recovery_dock = 0.059;
 
-// Convenience guards
-formula CAN_MOVE   = phase=0 & !collided & t<MAX_TIME & bat>LOW_BAT;            // Eligible to move while patrolling
-formula CAN_DETECT = phase=0 & !collided & t<MAX_TIME & bat>LOW_BAT & !scanned; // Eligible to scan once per waypoint
+// Energy costs applied on successful move_ij
+const int cost_01       = 120;
+const int cost_12       = 115;
+const int cost_23       = 119;
+const int cost_34       = 118;
+const int cost_45       = 135;
+const int cost_56       = 128;
+const int cost_dock     = 151;
+const int cost_recovery = 36;
+
+// -------------------------------- Convenience guards --------------------------------
+
+// afford_next: true iff, at current wp, we can pay the next patrol leg and still keep ≥LOW_BAT.
+//              Docking is exempt from the reserve (only requires bat≥cost_dock).
+formula afford_next = (wp=0 & bat>=(cost_01+LOW_BAT)) | (wp=1 & bat>=(cost_12+LOW_BAT)) | (wp=2 & bat>=(cost_23+LOW_BAT)) | 
+                      (wp=3 & bat>=(cost_34+LOW_BAT)) | (wp=4 & bat>=(cost_45+LOW_BAT)) | (wp=5 & bat>=(cost_56+LOW_BAT)) | (wp=6 & bat>=cost_dock);
+
+// can_move:     general eligibility to traverse the next patrol edge (no recovery active,
+//               within horizon, above low-SoC threshold, and preserving reserve via afford_next).
+formula can_move        = phase=0 & !recovery & t<MAX_TIME & bat>LOW_BAT & afford_next;
+
+// can_detect:   exactly one scan attempt per wp, only while above low-SoC threshold.
+formula can_detect      = phase=0 & !recovery & t<MAX_TIME & bat>LOW_BAT & !scanned;
+
+// docking_low_soc: early-docking entry when (i) at or below LOW_BAT, or (ii) cannot afford
+//               the next patrol leg after completing scans; requires bat≥cost_dock.
+formula docking_low_soc = phase=0 & !recovery & t<MAX_TIME & bat>=cost_dock & (bat<=LOW_BAT | ((wp=0 | scanned) & !afford_next));
+
+// ----------------------------------- Robot Module -----------------------------------
 
 module robot
-    phase    : [0..2] init 0;        // 0=patrol, 1=docked/success, 2=failed
-    wp       : [0..6] init 0;        // Current waypoint (0 is dock)
-    bat      : [0..MAX_BAT] init MAX_BAT;  // Remaining battery
-    t        : [0..MAX_TIME] init 0; // Elapsed steps
-    collided : bool init false;      // Collision latch until recovered
-    scanned  : bool init false;      // True after a scan at current wp
+    phase           : [0..2] init 0;             // 0=patrol (transient), 1=docked (absorbing), 2=failed (absorbing)
+    wp              : [0..6] init 0;             // Current waypoint (0 is dock/home). Patrol proceeds linearly to 6.
+    bat             : [0..MAX_BAT] init MAX_BAT; // Remaining battery units; debited by movement/recovery/dock actions
+    t               : [0..MAX_TIME] init 0;      // Elapsed discrete time; every enabled action increments by 1
+    recovery        : bool init false;           // Latch set true after a recovery trigger until resolved or failed
+    scanned         : bool init false;           // Latch set true after attempting the scan at the current wp
+    already_docking : bool init false;           // Latch to persist the docking attempt once initiated
+    set_bat_low     : bool init false;           // Clamp SoC to LOW_BAT before executing low-SoC docking
 
-    // Per-tag observation flags
+    // Per-tag observation flags (mission-level perception outcomes)
     seen1 : bool init false;
     seen2 : bool init false;
     seen3 : bool init false;
@@ -41,72 +98,66 @@ module robot
     seen5 : bool init false;
     seen6 : bool init false;
 
-    // Movement steps.
-    [move_01] CAN_MOVE & wp=0 & bat>=cost_01 ->
-        p_coll     : (collided'=true) & (t'=t+1)               // Collision: no progress, no move cost
-      + (1-p_coll) : (wp'=1) & (bat'=bat-cost_01) & (t'=t+1);  // Success: advance, pay cost
+    // Movement steps. On each patrol edge, either:
+    // (i)  a recovery is triggered (enter recovery subroutine, no SoC move cost yet),
+    // (ii) the move succeeds, consuming the edge-specific energy cost and advancing wp; scanned resets upon arrival.
+    // Note: move_01 is allowed without a scan at wp=0 (dock has no tag), whereas subsequent moves require scanned=true.
+    [move_01] can_move & wp=0           -> p_recovery_01:(recovery'=true)&(t'=t+1) + (1-p_recovery_01):(wp'=1)&(bat'=bat-cost_01)&(t'=t+1);
+    [move_12] can_move & wp=1 & scanned -> p_recovery_12:(recovery'=true)&(t'=t+1) + (1-p_recovery_12):(wp'=2)&(bat'=bat-cost_12)&(t'=t+1)&(scanned'=false);
+    [move_23] can_move & wp=2 & scanned -> p_recovery_23:(recovery'=true)&(t'=t+1) + (1-p_recovery_23):(wp'=3)&(bat'=bat-cost_23)&(t'=t+1)&(scanned'=false);
+    [move_34] can_move & wp=3 & scanned -> p_recovery_34:(recovery'=true)&(t'=t+1) + (1-p_recovery_34):(wp'=4)&(bat'=bat-cost_34)&(t'=t+1)&(scanned'=false);
+    [move_45] can_move & wp=4 & scanned -> p_recovery_45:(recovery'=true)&(t'=t+1) + (1-p_recovery_45):(wp'=5)&(bat'=bat-cost_45)&(t'=t+1)&(scanned'=false);
+    [move_56] can_move & wp=5 & scanned -> p_recovery_56:(recovery'=true)&(t'=t+1) + (1-p_recovery_56):(wp'=6)&(bat'=bat-cost_56)&(t'=t+1)&(scanned'=false);
 
-    [move_12] CAN_MOVE & wp=1 & bat>=cost_12 & scanned ->
-        p_coll     : (collided'=true) & (t'=t+1)
-      + (1-p_coll) : (wp'=2) & (scanned'=false) & (bat'=bat-cost_12) & (t'=t+1); // Reset scanned for next wp
+    // Docking leg from wp=6 to dock (success). The already_docking latch ensures that, if a recovery is 
+    // triggered on the dock edge, we resume docking afterward (rather than re-evaluating the low-SoC policy).
+    [move_dock] phase=0 & !recovery & t<MAX_TIME & wp=6 & scanned & bat>=cost_dock & (bat>LOW_BAT | already_docking) ->
+        p_recovery_dock     : (recovery'=true) & (already_docking'=true) & (t'=t+1)
+      + (1-p_recovery_dock) : (wp'=0) & (phase'=1) & (bat'=bat-cost_dock) & (already_docking'=false) & (t'=t+1); // Complete patrol on docking
 
-    [move_23] CAN_MOVE & wp=2 & bat>=cost_23 & scanned ->
-        p_coll     : (collided'=true) & (t'=t+1)
-      + (1-p_coll) : (wp'=3) & (scanned'=false) & (bat'=bat-cost_23) & (t'=t+1);
+    // Low-SoC docking path; only available when not collided. Carries recovery-trigger risk.
+    // First clamp the battery to LOW_BAT (accounting convention), then attempt docking.
+    [soc_bat_low] docking_low_soc & !already_docking & !set_bat_low -> (bat'=LOW_BAT) & (set_bat_low'=true);
 
-    [move_34] CAN_MOVE & wp=3 & bat>=cost_34 & scanned ->
-        p_coll     : (collided'=true) & (t'=t+1)
-      + (1-p_coll) : (wp'=4) & (scanned'=false) & (bat'=bat-cost_34) & (t'=t+1);
+    [move_dock_soc] docking_low_soc & !already_docking & set_bat_low ->
+        p_recovery_dock     : (recovery'=true) & (t'=t+1) 
+      + (1-p_recovery_dock) : (phase'=1) & (wp'=0) & (bat'=bat-cost_dock) & (t'=t+1);
 
-    [move_45] CAN_MOVE & wp=4 & bat>=cost_45 & scanned ->
-        p_coll     : (collided'=true) & (t'=t+1)
-      + (1-p_coll) : (wp'=5) & (scanned'=false) & (bat'=bat-cost_45) & (t'=t+1);
+    // Recovery; consumes cost either way (attempt made), succeeds with p_recovery_success.
+    // On failure, we enter the absorbing failure phase and set bat=0 to reflect depletion/abort.
+    [recovery] phase=0 & recovery & bat>=cost_recovery & t<MAX_TIME ->
+        p_recovery_success     : (recovery'=false) & (bat'=bat-cost_recovery) & (t'=t+1)  // Recovery succeeds
+      + (1-p_recovery_success) : (phase'=2)        & (bat'=0)                 & (t'=t+1); // Recovery fails → failure
 
-    [move_56] CAN_MOVE & wp=5 & bat>=cost_56 & scanned ->
-        p_coll     : (collided'=true) & (t'=t+1)
-      + (1-p_coll) : (wp'=6) & (scanned'=false) & (bat'=bat-cost_56) & (t'=t+1);
+    // Tag scans; one attempt per wp (k∈{1..6}). Success sets seen_k.
+    [scan_1] can_detect & wp=1 -> p_detect:(seen1'=true)&(scanned'=true)&(t'=t+1) + (1-p_detect):(scanned'=true)&(t'=t+1);
+    [scan_2] can_detect & wp=2 -> p_detect:(seen2'=true)&(scanned'=true)&(t'=t+1) + (1-p_detect):(scanned'=true)&(t'=t+1);
+    [scan_3] can_detect & wp=3 -> p_detect:(seen3'=true)&(scanned'=true)&(t'=t+1) + (1-p_detect):(scanned'=true)&(t'=t+1);
+    [scan_4] can_detect & wp=4 -> p_detect:(seen4'=true)&(scanned'=true)&(t'=t+1) + (1-p_detect):(scanned'=true)&(t'=t+1);
+    [scan_5] can_detect & wp=5 -> p_detect:(seen5'=true)&(scanned'=true)&(t'=t+1) + (1-p_detect):(scanned'=true)&(t'=t+1);
+    [scan_6] can_detect & wp=6 -> p_detect:(seen6'=true)&(scanned'=true)&(t'=t+1) + (1-p_detect):(scanned'=true)&(t'=t+1);
 
-    [move_dock] CAN_MOVE & wp=6 & bat>=cost_dock & scanned ->
-        p_coll     : (collided'=true) & (t'=t+1)
-      + (1-p_coll) : (wp'=0) & (phase'=1) & (bat'=bat-cost_dock) & (t'=t+1); // Complete patrol on docking
-
-    // Low-SoC docking path; only available when not collided. Carries collision risk.
-    [move_dock_soc] phase=0 & !collided & bat<=LOW_BAT & bat>=cost_dock_soc & t<MAX_TIME ->
-        p_coll     : (collided'=true) & (t'=t+1)
-      + (1-p_coll) : (phase'=1) & (wp'=0) & (bat'=bat-cost_dock_soc) & (t'=t+1);
-
-    // Collision recovery; consumes cost either way.
-    [recover] phase=0 & collided & bat>=cost_recover & t<MAX_TIME ->
-        p_recover     : (collided'=false) & (bat'=bat-cost_recover) & (t'=t+1)  // Recovery succeeds
-      + (1-p_recover) : (phase'=2)        & (bat'=bat-cost_recover) & (t'=t+1); // Recovery fails → failure
-
-    // Tag scans; one attempt per wp. Success marks seen_i.
-    [scan_1] CAN_DETECT & wp=1 -> p_detect:(seen1'=true)&(scanned'=true)&(t'=t+1) + (1-p_detect):(scanned'=true)&(t'=t+1);
-    [scan_2] CAN_DETECT & wp=2 -> p_detect:(seen2'=true)&(scanned'=true)&(t'=t+1) + (1-p_detect):(scanned'=true)&(t'=t+1);
-    [scan_3] CAN_DETECT & wp=3 -> p_detect:(seen3'=true)&(scanned'=true)&(t'=t+1) + (1-p_detect):(scanned'=true)&(t'=t+1);
-    [scan_4] CAN_DETECT & wp=4 -> p_detect:(seen4'=true)&(scanned'=true)&(t'=t+1) + (1-p_detect):(scanned'=true)&(t'=t+1);
-    [scan_5] CAN_DETECT & wp=5 -> p_detect:(seen5'=true)&(scanned'=true)&(t'=t+1) + (1-p_detect):(scanned'=true)&(t'=t+1);
-    [scan_6] CAN_DETECT & wp=6 -> p_detect:(seen6'=true)&(scanned'=true)&(t'=t+1) + (1-p_detect):(scanned'=true)&(t'=t+1);
-
-    // Failure guards for timeouts and insufficient SoC to act
-    [fail_time]        phase=0 & t >= MAX_TIME -> (phase'=2);
-    [fail_soc_recover] phase=0 & collided  & bat < cost_recover  -> (phase'=2);
-    [fail_soc_dock]    phase=0 & !collided & bat < cost_dock_soc -> (phase'=2);
+    // Failure guards for timeouts and insufficient SoC to act.
+    [fail_time]        phase=0 & t >= MAX_TIME                   -> (phase'=2);              // Time horizon exceeded before reaching a terminal outcome.
+    [fail_soc_recover] phase=0 & recovery  & bat < cost_recovery -> (phase'=2) & (bat' = 0); // Can't afford the recovery attempt when required.
+    [fail_soc_dock]    phase=0 & !recovery & bat < cost_dock     -> (phase'=2) & (bat' = 0); // Can't afford the docking leg when required.
 
     // Absorbing self-loops for terminal states
     [docked] phase=1 -> (phase'=1);
     [failed] phase=2 -> (phase'=2);
 endmodule
 
-// Terminal reward equals energy used so far
-rewards "energy"
-    (phase=1 | phase=2) : MAX_BAT - bat;
+// ------------------------ Reward: Total SoC cost of the run -------------------------
+
+rewards "cost_total"
+  nav_terminal : MAX_BAT - bat;
 endrewards
 
-// Property macros
-formula tag_success       = seen1 & seen2 & seen3 & seen4 & seen5 & seen6;  // All tags found
-formula nav_docked        = (phase = 1 & wp = 0);                           // Docked at wp0
-formula nav_failed        = (phase = 2);                                    // Entered failure
-formula nav_terminal      = (nav_docked | nav_failed);                      // Any terminal outcome
-formula mission_success   = (nav_docked & tag_success);                     // Docked with all tags
-formula mission_safe_fail = (nav_docked & !tag_success);                    // Docked without all tags
+// ----------------- Property labels for readability in PCTL queries ------------------
+
+formula all_tags          = seen1 & seen2 & seen3 & seen4 & seen5 & seen6; // All six tags detected
+formula all_waypoints     = (wp=6 & scanned);                              // Reached wp6 and performed its scan (i.e., visited all WPs)
+formula returned_to_dock  = (phase = 1);                                   // Successful docking at WP 0 (mission end)
+formula docking_failed    = (phase = 2);                                   // Any failure outcome (timeout, SoC, recovery failure)
+formula nav_terminal      = (returned_to_dock | docking_failed);           // Predicate for termination (success or failure)
+formula mission_success   = (returned_to_dock & all_tags);                 // Successful docking with complete tag set

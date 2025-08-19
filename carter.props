@@ -1,22 +1,18 @@
-R{"energy"}=? [ F nav_terminal ]
+P=? [ F all_tags ]
 
-P=? [ F (collided=true) ]
-
-P=? [ F tag_success ]
-
-P=? [ F nav_docked ]
+P=? [ F returned_to_dock ]
 
 P=? [ F mission_success ]
 
-P=? [ F nav_failed ]
+P=? [ F bat<=LOW_BAT ]
 
-P=? [ F nav_terminal ]
+P=? [ F docking_low_soc ]
 
-P=? [ F bat<LOW_BAT ]
+P=? [ F recovery ]
 
-P=? [ F bat=0 ]
+P=? [ F bat<=0 ]
 
-P=? [ F (phase=0&!collided&bat<=LOW_BAT&bat>=cost_dock_soc&t<MAX_TIME) ]
+R{"cost_total"}=? [ S ]
 
-P=? [ F (CAN_DETECT&wp=6) ]
+P=? [ F all_waypoints ]
 
