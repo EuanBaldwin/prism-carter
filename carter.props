@@ -6,7 +6,7 @@ P=? [ F mission_success ]
 
 P=? [ F terminal_low_soc ]
 
-P=? [ F docking_soc ]
+P=? [ F docking_low_soc ]
 
 P=? [ F recovery ]
 

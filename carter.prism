@@ -44,20 +44,20 @@ const double p_recovery_success = 0.9852;  // Probability that a recovery attemp
 // Probability that a recovery is triggered on move_ij
 const double p_recovery_01   = 0.043;
 const double p_recovery_12   = 0.040;
-const double p_recovery_23   = 0.042;
-const double p_recovery_34   = 0.042;
+const double p_recovery_23   = 0.039;
+const double p_recovery_34   = 0.046;
 const double p_recovery_45   = 0.051;
-const double p_recovery_56   = 0.047;
-const double p_recovery_dock = 0.059;
+const double p_recovery_56   = 0.050;
+const double p_recovery_dock = 0.060;
 
 // Energy costs applied on successful move_ij
 const int cost_01       = 120;
-const int cost_12       = 115;
-const int cost_23       = 119;
-const int cost_34       = 118;
-const int cost_45       = 135;
-const int cost_56       = 128;
-const int cost_dock     = 151;
+const int cost_12       = 114;
+const int cost_23       = 112;
+const int cost_34       = 126;
+const int cost_45       = 136;
+const int cost_56       = 134;
+const int cost_dock     = 153;
 const int cost_recovery = 36;
 
 // -------------------------------- Convenience guards --------------------------------
@@ -87,7 +87,7 @@ module robot
     t               : [0..MAX_TIME] init 0;      // Elapsed discrete time; every enabled action increments by 1
     recovery        : bool init false;           // Latch set true after a recovery trigger until resolved or failed
     scanned         : bool init false;           // Latch set true after attempting the scan at the current wp
-    already_docking : bool init false;           // Latch to persist the docking attempt once initiated
+    already_docking : bool init false;           // Latch to persist non-SoC docking once initiated
     set_bat_low     : bool init false;           // Clamp SoC to LOW_BAT before executing low-SoC docking
 
     // Per-tag observation flags (mission-level perception outcomes)
@@ -161,5 +161,6 @@ formula all_seen          = seen1 & seen2 & seen3 & seen4 & seen5 & seen6; // Al
 formula mission_success   = (docking_success & all_seen);                  // Successful docking with complete tag set
 formula terminal_low_soc  = (bat <= LOW_BAT);                              // Mission terminates with low SoC
 formula zero_soc_at_end   = (bat <= 0);                                    // Mission terminates with zero SoC
+formula docking_low_soc   = (docking_soc & !already_docking);              // Low SoC docking is triggered
 formula docking_failed    = (phase = 2);                                   // Any failure outcome (timeout, SoC, recovery failure)
 formula nav_terminal      = (docking_success | docking_failed);            // Predicate for termination (success or failure)
