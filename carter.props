@@ -1,16 +1,16 @@
-P=? [ F all_tags ]
+P=? [ F all_seen ]
 
-P=? [ F returned_to_dock ]
+P=? [ F docking_success ]
 
 P=? [ F mission_success ]
 
-P=? [ F bat<=LOW_BAT ]
+P=? [ F terminal_low_soc ]
 
-P=? [ F docking_low_soc ]
+P=? [ F docking_soc ]
 
 P=? [ F recovery ]
 
-P=? [ F bat<=0 ]
+P=? [ F zero_soc_at_end ]
 
 R{"cost_total"}=? [ S ]
 

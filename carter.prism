@@ -75,8 +75,8 @@ formula can_move        = phase=0 & !recovery & t<MAX_TIME & bat>LOW_BAT & affor
 formula can_detect      = phase=0 & !recovery & t<MAX_TIME & bat>LOW_BAT & !scanned;
 
 // docking_low_soc: early-docking entry when (i) at or below LOW_BAT, or (ii) cannot afford
-//               the next patrol leg after completing scans; requires bat≥cost_dock.
-formula docking_low_soc = phase=0 & !recovery & t<MAX_TIME & bat>=cost_dock & (bat<=LOW_BAT | ((wp=0 | scanned) & !afford_next));
+//                  the next patrol leg after completing scans; requires bat≥cost_dock.
+formula docking_soc = phase=0 & !recovery & t<MAX_TIME & bat>=cost_dock & (bat<=LOW_BAT | ((wp=0 | scanned) & !afford_next));
 
 // ----------------------------------- Robot Module -----------------------------------
 
@@ -117,9 +117,9 @@ module robot
 
     // Low-SoC docking path; only available when not collided. Carries recovery-trigger risk.
     // First clamp the battery to LOW_BAT (accounting convention), then attempt docking.
-    [soc_bat_low] docking_low_soc & !already_docking & !set_bat_low -> (bat'=LOW_BAT) & (set_bat_low'=true);
+    [soc_bat_low] docking_soc & !already_docking & !set_bat_low -> (bat'=LOW_BAT) & (set_bat_low'=true);
 
-    [move_dock_soc] docking_low_soc & !already_docking & set_bat_low ->
+    [move_dock_soc] docking_soc & !already_docking & set_bat_low ->
         p_recovery_dock     : (recovery'=true) & (t'=t+1) 
       + (1-p_recovery_dock) : (phase'=1) & (wp'=0) & (bat'=bat-cost_dock) & (t'=t+1);
 
@@ -155,9 +155,11 @@ endrewards
 
 // ----------------- Property labels for readability in PCTL queries ------------------
 
-formula all_tags          = seen1 & seen2 & seen3 & seen4 & seen5 & seen6; // All six tags detected
-formula all_waypoints     = (wp=6 & scanned);                              // Reached wp6 and performed its scan (i.e., visited all WPs)
-formula returned_to_dock  = (phase = 1);                                   // Successful docking at WP 0 (mission end)
+formula docking_success   = (phase = 1);                                   // Successful docking at WP 0 (mission end)
+formula all_waypoints     = (wp = 6);                                      // Reached wp6 and performed its scan (i.e., visited all WPs)
+formula all_seen          = seen1 & seen2 & seen3 & seen4 & seen5 & seen6; // All six tags detected
+formula mission_success   = (docking_success & all_seen);                  // Successful docking with complete tag set
+formula terminal_low_soc  = (bat <= LOW_BAT);                              // Mission terminates with low SoC
+formula zero_soc_at_end   = (bat <= 0);                                    // Mission terminates with zero SoC
 formula docking_failed    = (phase = 2);                                   // Any failure outcome (timeout, SoC, recovery failure)
-formula nav_terminal      = (returned_to_dock | docking_failed);           // Predicate for termination (success or failure)
-formula mission_success   = (returned_to_dock & all_tags);                 // Successful docking with complete tag set
+formula nav_terminal      = (docking_success | docking_failed);            // Predicate for termination (success or failure)
