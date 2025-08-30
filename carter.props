@@ -1,6 +1,6 @@
-P=? [ F all_seen ]
+P=? [ F all_tags ]
 
-P=? [ F docking_success ]
+P=? [ F docked ]
 
 P=? [ F mission_success ]
 
@@ -10,9 +10,11 @@ P=? [ F docking_low_soc ]
 
 P=? [ F recovery ]
 
-P=? [ F zero_soc_at_end ]
+P=? [ F terminal_zero_soc ]
 
 R{"cost_total"}=? [ S ]
 
-P=? [ F all_waypoints ]
+P=? [ F all_wp ]
+
+P=? [ F (all_tags&all_wp) ]
 

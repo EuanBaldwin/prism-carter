@@ -1,7 +1,7 @@
 // Model: Autonomous warehouse patrol robot DTMC with battery, perception, and recovery logic.
 
 // Purpose: 
-//   Abstract a strict ordered patrol (0→1→2→3→4→5→6→dock) to evaluate
+//   Abstract a strict ordered patrol (dock→1→2→3→4→5→6→dock) to evaluate
 //   navigation success, tag-detection success, early docking on low SoC, and
 //   failure due to recovery or resource/time limits.
 
@@ -155,12 +155,12 @@ endrewards
 
 // ----------------- Property labels for readability in PCTL queries ------------------
 
-formula docking_success   = (phase = 1);                                   // Successful docking at WP 0 (mission end)
-formula all_waypoints     = (wp = 6);                                      // Reached wp6 and performed its scan (i.e., visited all WPs)
-formula all_seen          = seen1 & seen2 & seen3 & seen4 & seen5 & seen6; // All six tags detected
-formula mission_success   = (docking_success & all_seen);                  // Successful docking with complete tag set
+formula docked            = (phase = 1);                                   // Successful docking at WP 0 (mission end)
+formula all_wp            = (wp = 6);                                      // Reached wp6 and performed its scan (i.e., visited all WPs)
+formula all_tags          = seen1 & seen2 & seen3 & seen4 & seen5 & seen6; // All six tags detected
+formula mission_success   = (docked & all_tags);                           // Successful docking with complete tag set
 formula terminal_low_soc  = (bat <= LOW_BAT);                              // Mission terminates with low SoC
-formula zero_soc_at_end   = (bat <= 0);                                    // Mission terminates with zero SoC
+formula terminal_zero_soc = (bat <= 0);                                    // Mission terminates with zero SoC
 formula docking_low_soc   = (docking_soc & !already_docking);              // Low SoC docking is triggered
 formula docking_failed    = (phase = 2);                                   // Any failure outcome (timeout, SoC, recovery failure)
-formula nav_terminal      = (docking_success | docking_failed);            // Predicate for termination (success or failure)
+formula nav_terminal      = (docked | docking_failed);                     // Predicate for termination (success or failure)
